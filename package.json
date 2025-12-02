@@ -1,0 +1,36 @@
+{
+  "name": "jira-testrail-gherkin-sync",
+  "version": "1.0.0",
+  "description": "CLI tool to sync Gherkin scenarios from Jira tickets to TestRail test cases",
+  "main": "dist/index.js",
+  "bin": {
+    "jira-testrail-sync": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "sync": "npm run build && node dist/index.js",
+    "dev": "ts-node src/index.ts"
+  },
+  "keywords": [
+    "jira",
+    "testrail",
+    "gherkin",
+    "sync",
+    "test-cases"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "chalk": "^4.1.2",
+    "commander": "^11.1.0",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
+
