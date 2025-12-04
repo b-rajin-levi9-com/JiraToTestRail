@@ -206,8 +206,9 @@ export class SyncService {
                   if (dryRun) {
                     logger.info(`[DRY RUN] Would create section: "${partNameOriginal}" ${parentContext}`);
                     // For dry run, create a mock section to continue the preview
+                    // Use unique negative IDs to avoid conflicts in hierarchical paths
                     const mockSection: TestRailSection = {
-                      id: -1, // Placeholder ID for dry-run
+                      id: -1 - i, // Unique ID for each level in the hierarchy
                       name: partNameOriginal,
                       suite_id: resolvedSuiteId!,
                       parent_id: currentParentId || undefined,
@@ -333,8 +334,8 @@ export class SyncService {
         // Set sectionId from selectedSection if we found/created one
         if (selectedSection) {
           sectionId = selectedSection.id;
-          // Log section creation in dry-run mode
-          if (dryRun && sectionId === -1) {
+          // Log section creation in dry-run mode (negative IDs indicate mock sections)
+          if (dryRun && sectionId < 0) {
             logger.info(`[DRY RUN] Section "${selectedSection.name}" would be created in suite ${resolvedSuiteId}`);
           }
         }
@@ -384,9 +385,9 @@ export class SyncService {
       logger.success(`Found ${scenarios.length} scenario(s)`);
 
       // Step 3: Get existing test cases
-      // Skip fetching if we're in dry-run mode with a mock section (ID = -1)
+      // Skip fetching if we're in dry-run mode with a mock section (negative IDs indicate mock sections)
       let existingTestCases: TestRailTestCaseResponse[] = [];
-      if (dryRun && sectionId === -1) {
+      if (dryRun && sectionId < 0) {
         logger.info(`[DRY RUN] Skipping test case fetch (section would be created)`);
         logger.verboseLog(`[DRY RUN] Would fetch existing test cases from TestRail section ${sectionId}...`);
       } else {
