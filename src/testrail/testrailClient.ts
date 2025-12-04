@@ -35,6 +35,13 @@ export interface TestRailSection {
   [key: string]: any;
 }
 
+export interface TestRailSuite {
+  id: number;
+  name: string;
+  description?: string;
+  [key: string]: any;
+}
+
 export class TestRailClient {
   private client: AxiosInstance;
   private customFieldsCache: Map<string, any> | null = null;
@@ -489,6 +496,348 @@ export class TestRailClient {
         );
       }
       throw new Error(`Error deleting test case: ${error.message}`);
+    }
+  }
+
+  /**
+   * Gets all suites in a project
+   */
+  async getSuites(projectId: number): Promise<TestRailSuite[]> {
+    try {
+      logger.verboseLog(`Fetching suites for project ${projectId}`);
+      
+      const response = await this.client.get(
+        `/index.php?/api/v2/get_suites/${projectId}`
+      );
+      
+      // Log raw response for debugging
+      logger.verboseLog(`Raw API response type: ${typeof response.data}, isArray: ${Array.isArray(response.data)}`);
+      if (response.data && typeof response.data === 'object') {
+        logger.verboseLog(`Response keys: ${Object.keys(response.data).join(', ')}`);
+      }
+      
+      // Handle different response formats
+      let suites: TestRailSuite[] = [];
+      if (Array.isArray(response.data)) {
+        suites = response.data;
+      } else if (response.data && Array.isArray(response.data.suites)) {
+        suites = response.data.suites;
+      } else if (response.data && typeof response.data === 'object') {
+        // Try to find suites array in response
+        const possibleSuites = Object.values(response.data).find((val: any) => Array.isArray(val));
+        if (possibleSuites) {
+          suites = possibleSuites as TestRailSuite[];
+        }
+      }
+      
+      logger.verboseLog(`Found ${suites.length} suite(s) in project`);
+      if (suites.length > 0) {
+        logger.verboseLog(`Suite names: ${suites.map(s => `"${s.name}"`).join(', ')}`);
+      }
+      
+      return suites;
+    } catch (error: any) {
+      if (error.response) {
+        if (error.response.status === 401 || error.response.status === 403) {
+          throw new Error(
+            `TestRail authentication failed. Please check your credentials (TESTRAIL_USERNAME, TESTRAIL_API_KEY).`
+          );
+        }
+        if (error.response.status === 400) {
+          throw new Error(
+            `Invalid request. Please check project ID (${projectId}).`
+          );
+        }
+        throw new Error(
+          `Failed to fetch suites: ${error.response.status} ${error.response.statusText}`
+        );
+      }
+      if (error.request) {
+        throw new Error(
+          `Network error: Could not reach TestRail at ${config.testrail.url}. Please check your connection and TESTRAIL_URL.`
+        );
+      }
+      throw new Error(`Error fetching suites: ${error.message}`);
+    }
+  }
+
+  /**
+   * Finds a suite by name (case-insensitive, handles whitespace normalization)
+   */
+  async findSuiteByName(projectId: number, suiteName: string): Promise<TestRailSuite | null> {
+    try {
+      const suites = await this.getSuites(projectId);
+      // Normalize: lowercase, trim, and replace multiple spaces with single space
+      const normalizedName = suiteName.toLowerCase().trim().replace(/\s+/g, ' ');
+      
+      logger.verboseLog(`Searching for suite: "${suiteName}" (normalized: "${normalizedName}")`);
+      logger.verboseLog(`Found ${suites.length} suite(s) in project ${projectId}`);
+      
+      // Log all suite names for debugging
+      suites.forEach((suite: TestRailSuite) => {
+        const suiteNormalized = suite.name.toLowerCase().trim().replace(/\s+/g, ' ');
+        const matches = suiteNormalized === normalizedName;
+        logger.verboseLog(`  - "${suite.name}" (ID: ${suite.id}) [normalized: "${suiteNormalized}"] ${matches ? '✓ MATCH' : ''}`);
+      });
+      
+      const foundSuite = suites.find((suite: TestRailSuite) => {
+        const suiteNormalized = suite.name.toLowerCase().trim().replace(/\s+/g, ' ');
+        return suiteNormalized === normalizedName;
+      });
+      
+      if (!foundSuite) {
+        logger.verboseLog(`No exact match found for "${suiteName}"`);
+        // Try fuzzy matching - check if any suite name contains the search term
+        const fuzzyMatches = suites.filter((suite: TestRailSuite) => {
+          const suiteNormalized = suite.name.toLowerCase().trim().replace(/\s+/g, ' ');
+          return suiteNormalized.includes(normalizedName) || normalizedName.includes(suiteNormalized);
+        });
+        if (fuzzyMatches.length > 0) {
+          logger.verboseLog(`Found ${fuzzyMatches.length} potential fuzzy match(es):`);
+          fuzzyMatches.forEach((suite: TestRailSuite) => {
+            logger.verboseLog(`  - "${suite.name}" (ID: ${suite.id})`);
+          });
+        }
+      }
+      
+      return foundSuite || null;
+    } catch (error: any) {
+      logger.verboseLog(`Error finding suite by name: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Creates a new suite in TestRail
+   */
+  async createSuite(projectId: number, suiteName: string, description?: string): Promise<TestRailSuite> {
+    try {
+      logger.verboseLog(`Creating suite: "${suiteName}" in project ${projectId}`);
+      
+      const payload: any = {
+        name: suiteName,
+      };
+      
+      if (description) {
+        payload.description = description;
+      }
+
+      const response = await this.client.post(
+        `/index.php?/api/v2/add_suite/${projectId}`,
+        payload
+      );
+
+      logger.verboseLog(`Successfully created suite with ID: ${response.data.id}`);
+      logger.success(`Created suite "${suiteName}" (ID: ${response.data.id})`);
+      return response.data;
+    } catch (error: any) {
+      if (error.response) {
+        const status = error.response.status;
+        const errorData = error.response.data || {};
+        const errorMsg = errorData.error || errorData.message || '';
+        const errorDetails = errorData ? JSON.stringify(errorData, null, 2) : '';
+        
+        logger.verboseLog(`TestRail API Error Response: Status ${status}, Data: ${errorDetails}`);
+        
+        if (status === 401) {
+          throw new Error(
+            `TestRail authentication failed (401). Please check your credentials (TESTRAIL_USERNAME, TESTRAIL_API_KEY).`
+          );
+        }
+        if (status === 403) {
+          // Check for single suite mode error
+          const isSingleSuiteMode = errorMsg.toLowerCase().includes('single test suite') || 
+                                    errorMsg.toLowerCase().includes('only supports a single');
+          
+          if (isSingleSuiteMode) {
+            // Try to get existing suites to suggest them
+            let suiteSuggestions = '';
+            try {
+              const existingSuites = await this.getSuites(projectId);
+              // In Single Suite Mode, the master suite has the lowest ID
+              // Baselines are created later and will have higher IDs
+              // So we should suggest the suite with the lowest ID
+              if (existingSuites.length > 0) {
+                // Sort by ID and get the one with lowest ID (the master suite)
+                const masterSuite = existingSuites.sort((a, b) => a.id - b.id)[0];
+                suiteSuggestions = `\n\nAvailable suite in this project:\n` +
+                  `  - "${masterSuite.name}" (ID: ${masterSuite.id})\n` +
+                  `\n\nUse the existing suite instead. For example:\n` +
+                  `  --suite-name "${masterSuite.name}"\n` +
+                  `  or\n` +
+                  `  --suite-id ${masterSuite.id}`;
+              }
+            } catch (e) {
+              // If we can't fetch suites, just continue without suggestions
+              logger.verboseLog(`Could not fetch suites for suggestions: ${e}`);
+            }
+            
+            throw new Error(
+              `This TestRail project is configured in "Single Suite Mode" and only allows one test suite.\n` +
+              `You cannot create additional suites in this project.\n` +
+              `Instead, use the existing suite and create sections within it.${suiteSuggestions}`
+            );
+          }
+          
+          // 403 for other reasons (permission denied)
+          const permissionMsg = errorMsg.toLowerCase().includes('permission') || errorMsg.toLowerCase().includes('not allowed')
+            ? `\nError details: ${errorMsg}`
+            : '';
+          throw new Error(
+            `TestRail permission denied (403). You may not have permission to create suites in project ${projectId}.${permissionMsg}\n` +
+            `Please check:\n` +
+            `1. Your TestRail user has "Project Lead" or "Administrator" role\n` +
+            `2. You have "Add/Edit Test Cases" permission for this project\n` +
+            `3. The project allows suite creation (some projects may be locked)`
+          );
+        }
+        if (status === 400) {
+          throw new Error(`Failed to create suite: ${errorMsg || 'Invalid request'}\nDetails: ${errorDetails}`);
+        }
+        throw new Error(
+          `Failed to create suite: ${status} ${error.response.statusText}\nDetails: ${errorDetails}`
+        );
+      }
+      if (error.request) {
+        throw new Error(
+          `Network error: Could not reach TestRail. Please check your connection.`
+        );
+      }
+      throw new Error(`Error creating suite: ${error.message}`);
+    }
+  }
+
+  /**
+   * Creates a new section in TestRail
+   */
+  async createSection(
+    projectId: number,
+    suiteId: number,
+    sectionName: string,
+    parentId?: number
+  ): Promise<TestRailSection> {
+    try {
+      const parentInfo = parentId ? ` under parent section ${parentId}` : '';
+      logger.verboseLog(`Creating section: "${sectionName}" in suite ${suiteId}${parentInfo}`);
+      
+      const payload: any = {
+        name: sectionName,
+        suite_id: suiteId,
+      };
+      
+      if (parentId) {
+        payload.parent_id = parentId;
+      }
+
+      const response = await this.client.post(
+        `/index.php?/api/v2/add_section/${projectId}`,
+        payload
+      );
+
+      logger.verboseLog(`Successfully created section with ID: ${response.data.id}`);
+      logger.success(`Created section "${sectionName}" (ID: ${response.data.id})`);
+      return response.data;
+    } catch (error: any) {
+      if (error.response) {
+        if (error.response.status === 401 || error.response.status === 403) {
+          throw new Error(
+            `TestRail authentication failed. Please check your credentials.`
+          );
+        }
+        if (error.response.status === 400) {
+          const errorMsg = error.response.data?.error || 'Invalid request';
+          const errorDetails = error.response.data ? JSON.stringify(error.response.data, null, 2) : '';
+          logger.verboseLog(`TestRail API Error Response: ${errorDetails}`);
+          throw new Error(`Failed to create section: ${errorMsg}\nDetails: ${errorDetails}`);
+        }
+        throw new Error(
+          `Failed to create section: ${error.response.status} ${error.response.statusText}`
+        );
+      }
+      if (error.request) {
+        throw new Error(
+          `Network error: Could not reach TestRail. Please check your connection.`
+        );
+      }
+      throw new Error(`Error creating section: ${error.message}`);
+    }
+  }
+
+  /**
+   * Deletes a suite from TestRail
+   */
+  async deleteSuite(suiteId: number): Promise<void> {
+    try {
+      logger.verboseLog(`Deleting suite ID ${suiteId}`);
+      
+      await this.client.post(
+        `/index.php?/api/v2/delete_suite/${suiteId}`,
+        {}
+      );
+
+      logger.verboseLog(`Successfully deleted suite ID ${suiteId}`);
+      logger.success(`Deleted suite ID ${suiteId}`);
+    } catch (error: any) {
+      if (error.response) {
+        const status = error.response.status;
+        const errorData = error.response.data || {};
+        const errorMsg = errorData.error || errorData.message || '';
+        const errorDetails = errorData ? JSON.stringify(errorData, null, 2) : '';
+        
+        logger.verboseLog(`TestRail API Error Response: Status ${status}, Data: ${errorDetails}`);
+        
+        if (status === 401) {
+          throw new Error(
+            `TestRail authentication failed (401). Please check your credentials (TESTRAIL_USERNAME, TESTRAIL_API_KEY).`
+          );
+        }
+        if (status === 403) {
+          // Check for Single Suite Mode restriction or master suite restriction
+          const isSingleSuiteMode = errorMsg.toLowerCase().includes('single') || 
+                                    errorMsg.toLowerCase().includes('not permitted') ||
+                                    errorMsg.toLowerCase().includes('not allowed') ||
+                                    errorMsg.toLowerCase().includes('master suite') ||
+                                    errorMsg.toLowerCase().includes('cannot be deleted');
+          
+          if (isSingleSuiteMode) {
+            throw new Error(
+              `Cannot delete suite in Single Suite Mode.\n` +
+              `TestRail projects configured in "Single Suite Mode" do not allow suite deletion.\n` +
+              `The master suite cannot be deleted in this project type.\n\n` +
+              `If you need to delete suites, you must:\n` +
+              `1. Change the project to "Multiple Test Suites" mode in TestRail UI\n` +
+              `2. Or use TestRail UI to manage test cases and sections instead\n\n` +
+              `Error details: ${errorMsg || 'Suite deletion not permitted'}`
+            );
+          }
+          
+          // Other 403 errors (permission denied)
+          throw new Error(
+            `TestRail permission denied (403). You may not have permission to delete suites.\n` +
+            `Please check:\n` +
+            `1. Your TestRail user has "Project Lead" or "Administrator" role\n` +
+            `2. You have permission to delete suites in this project\n` +
+            `3. The suite is not locked or in use\n\n` +
+            `Error details: ${errorMsg || 'Permission denied'}`
+          );
+        }
+        if (status === 400) {
+          const errorMsg = errorData.error || 'Invalid request';
+          throw new Error(`Failed to delete suite: ${errorMsg}\nDetails: ${errorDetails}`);
+        }
+        if (status === 404) {
+          throw new Error(`Suite with ID ${suiteId} not found.`);
+        }
+        throw new Error(
+          `Failed to delete suite: ${status} ${error.response.statusText}\nDetails: ${errorDetails}`
+        );
+      }
+      if (error.request) {
+        throw new Error(
+          `Network error: Could not reach TestRail. Please check your connection.`
+        );
+      }
+      throw new Error(`Error deleting suite: ${error.message}`);
     }
   }
 }
