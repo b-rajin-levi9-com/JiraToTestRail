@@ -1,6 +1,6 @@
 import { JiraClient, JiraTicket } from '../jira/jiraClient';
 import { GherkinParser, ParsedScenario } from '../parser/gherkinParser';
-import { TestRailClient, TestRailTestCase, TestRailTestCaseResponse, TestRailSection } from '../testrail/testrailClient';
+import { TestRailClient, TestRailTestCase, TestRailTestCaseResponse, TestRailSection, TestRailSuite } from '../testrail/testrailClient';
 import { logger } from '../utils/logger';
 import { config } from '../utils/config';
 
@@ -35,7 +35,10 @@ export class SyncService {
     testrailSuiteId?: number,
     testrailSectionId?: number,
     sectionName?: string,
-    dryRun: boolean = false
+    dryRun: boolean = false,
+    suiteName?: string,
+    createSuiteIfMissing: boolean = false,
+    createSectionIfMissing: boolean = false
   ): Promise<SyncResult> {
     const result: SyncResult = {
       jiraTicket: {} as JiraTicket,
@@ -49,11 +52,63 @@ export class SyncService {
     };
 
     try {
+      // Step 0: Handle suite creation/resolution if suite-name is provided
+      let resolvedSuiteId: number | undefined = testrailSuiteId;
+      
+      if (suiteName && !testrailSuiteId) {
+        // Try to find existing suite by name
+        logger.info(`Looking for suite: "${suiteName}"...`);
+        const existingSuite = await this.testrailClient.findSuiteByName(testrailProjectId, suiteName);
+        
+        if (existingSuite) {
+          resolvedSuiteId = existingSuite.id;
+          logger.success(`Found existing suite "${suiteName}" (ID: ${existingSuite.id})`);
+        } else if (createSuiteIfMissing) {
+          if (dryRun) {
+            logger.verboseLog(`[DRY RUN] Would create suite: "${suiteName}"`);
+            // Assign mock suite ID for dry-run to allow preview to continue
+            resolvedSuiteId = -1;
+          } else {
+            logger.info(`Creating suite: "${suiteName}"...`);
+            const newSuite = await this.testrailClient.createSuite(testrailProjectId, suiteName);
+            resolvedSuiteId = newSuite.id;
+          }
+        } else {
+          // Get available suites for better error message
+          try {
+            const availableSuites = await this.testrailClient.getSuites(testrailProjectId);
+            const suiteNames = availableSuites.map(s => `"${s.name}" (ID: ${s.id})`).join(', ');
+            const errorMsg = suiteNames 
+              ? `Suite "${suiteName}" not found in project ${testrailProjectId}.\n` +
+                `Available suites: ${suiteNames}\n` +
+                `Use --create-suite to create it automatically.`
+              : `Suite "${suiteName}" not found in project ${testrailProjectId}.\n` +
+                `No suites found in project. Use --create-suite to create it automatically.`;
+            throw new Error(errorMsg);
+          } catch (error: any) {
+            // If we can't fetch suites, use simpler error message
+            if (error.message.includes('not found')) {
+              throw error; // Re-throw our error
+            }
+            throw new Error(
+              `Suite "${suiteName}" not found in project ${testrailProjectId}. ` +
+              `Use --create-suite to create it automatically.`
+            );
+          }
+        }
+      }
+
       // Resolve section ID from suite ID if needed
-      let sectionId: number;
-      if (testrailSuiteId) {
-        logger.info(`Fetching sections from suite ${testrailSuiteId}...`);
-        const sections = await this.testrailClient.getSections(testrailProjectId, testrailSuiteId);
+      let sectionId: number | undefined;
+      if (resolvedSuiteId) {
+        // Skip API call in dry-run mode if we have a mock suite ID
+        let sections: TestRailSection[] = [];
+        if (dryRun && resolvedSuiteId === -1) {
+          logger.verboseLog(`[DRY RUN] Skipping section fetch for mock suite ID ${resolvedSuiteId}`);
+        } else {
+          logger.info(`Fetching sections from suite ${resolvedSuiteId}...`);
+          sections = await this.testrailClient.getSections(testrailProjectId, resolvedSuiteId);
+        }
         
         // Ensure sections is an array
         if (!Array.isArray(sections)) {
@@ -62,15 +117,50 @@ export class SyncService {
         }
         
         if (sections.length === 0) {
-          throw new Error(`No sections found in suite ${testrailSuiteId}. Please create a section first.`);
+          // If no sections exist and we should create one, create a default section
+          if (createSectionIfMissing && sectionName) {
+            if (dryRun) {
+              logger.info(`[DRY RUN] Would create section: "${sectionName}" in suite ${resolvedSuiteId}`);
+              // For dry run, create a mock section to continue the preview
+              const mockSection: TestRailSection = {
+                id: -1, // Placeholder ID for dry-run
+                name: sectionName.split('/').pop() || sectionName,
+                suite_id: resolvedSuiteId,
+              };
+              sectionId = mockSection.id;
+              // Skip the rest of section finding logic since we've simulated the section creation
+            } else {
+              logger.info(`No sections found in suite ${resolvedSuiteId}. Creating section "${sectionName}"...`);
+              const newSection = await this.createSectionHierarchy(
+                testrailProjectId,
+                resolvedSuiteId,
+                sectionName,
+                sections,
+                createSectionIfMissing,
+                dryRun
+              );
+              sectionId = newSection.id;
+              // Skip the rest of section finding logic since we've already created the section
+            }
+          } else {
+            throw new Error(
+              `No sections found in suite ${resolvedSuiteId}. ` +
+              `Please create a section first or use --create-section with --section-name to create it automatically.`
+            );
+          }
         }
+        
+        // Only find section if we haven't already set sectionId (i.e., when sections.length > 0 or section was not created)
+        if (!sectionId) {
         
         // Find section by name if provided, otherwise use first section
         let selectedSection;
         if (sectionName) {
           const normalizedName = sectionName.toLowerCase().trim();
           
-          // Check if section name contains a path separator (for subsections)
+          // Preserve original casing for section names (for creation)
+          const originalNameParts = sectionName.split('/').map(part => part.trim()).filter(part => part.length > 0);
+          // Normalized parts for comparison (lowercase)
           const nameParts = normalizedName.split('/').map(part => part.trim()).filter(part => part.length > 0);
           
           if (nameParts.length === 1) {
@@ -92,9 +182,10 @@ export class SyncService {
             const pathTraversed: string[] = [];
             
             for (let i = 0; i < nameParts.length; i++) {
-              const partName = nameParts[i];
+              const partNameNormalized = nameParts[i]; // For comparison (lowercase)
+              const partNameOriginal = originalNameParts[i]; // For creation (original casing)
               const foundSection = sections.find((s: TestRailSection) => 
-                s.name.toLowerCase().trim() === partName && 
+                s.name.toLowerCase().trim() === partNameNormalized && 
                 (currentParentId === null ? !s.parent_id : s.parent_id === currentParentId)
               );
               
@@ -110,11 +201,50 @@ export class SyncService {
                   .map(s => `"${s.name}" (ID: ${s.id})`)
                   .join(', ');
                 
-                throw new Error(
-                  `Section "${partName}" not found ${parentContext} in suite ${testrailSuiteId}.\n` +
-                  `Path: ${currentPath ? currentPath + '/' : ''}${partName}\n` +
-                  `Available sections ${parentContext}: ${availableSections || 'None'}`
-                );
+                // If createSectionIfMissing is enabled, create the missing section
+                if (createSectionIfMissing) {
+                  if (dryRun) {
+                    logger.info(`[DRY RUN] Would create section: "${partNameOriginal}" ${parentContext}`);
+                    // For dry run, create a mock section to continue the preview
+                    // Use unique negative IDs to avoid conflicts in hierarchical paths
+                    const mockSection: TestRailSection = {
+                      id: -1 - i, // Unique ID for each level in the hierarchy
+                      name: partNameOriginal,
+                      suite_id: resolvedSuiteId!,
+                      parent_id: currentParentId || undefined,
+                    };
+                    sections.push(mockSection);
+                    pathTraversed.push(mockSection.name);
+                    currentParentId = mockSection.id;
+                    if (i === nameParts.length - 1) {
+                      selectedSection = mockSection;
+                    }
+                    continue;
+                  } else {
+                    logger.info(`Creating section: "${partNameOriginal}" ${parentContext}...`);
+                    const newSection = await this.testrailClient.createSection(
+                      testrailProjectId,
+                      resolvedSuiteId!,
+                      partNameOriginal,
+                      currentParentId || undefined
+                    );
+                    // Update sections list and continue traversal
+                    sections.push(newSection);
+                    pathTraversed.push(newSection.name);
+                    currentParentId = newSection.id;
+                    if (i === nameParts.length - 1) {
+                      selectedSection = newSection;
+                    }
+                    continue;
+                  }
+                } else {
+                  throw new Error(
+                    `Section "${partNameOriginal}" not found ${parentContext} in suite ${resolvedSuiteId}.\n` +
+                    `Path: ${currentPath ? currentPath + '/' : ''}${partNameOriginal}\n` +
+                    `Available sections ${parentContext}: ${availableSections || 'None'}\n` +
+                    `Use --create-section to create missing sections automatically.`
+                  );
+                }
               }
               
               pathTraversed.push(foundSection.name);
@@ -142,10 +272,36 @@ export class SyncService {
                 : '';
               return `"${s.name}" (ID: ${s.id})${parentInfo}`;
             }).join(', ');
-            throw new Error(
-              `Section "${sectionName}" not found in suite ${testrailSuiteId}.\n` +
-              `Available sections: ${availableSections}`
-            );
+            // If createSectionIfMissing is enabled, create the section
+            if (createSectionIfMissing) {
+              if (dryRun) {
+                logger.info(`[DRY RUN] Would create section: "${sectionName}"`);
+                // For dry run, create a mock section to continue the preview
+                const mockSection: TestRailSection = {
+                  id: -1, // Placeholder ID for dry-run
+                  name: sectionName.split('/').pop() || sectionName,
+                  suite_id: resolvedSuiteId!,
+                };
+                selectedSection = mockSection;
+              } else {
+                logger.info(`Creating section: "${sectionName}"...`);
+                const newSection = await this.createSectionHierarchy(
+                  testrailProjectId,
+                  resolvedSuiteId!,
+                  sectionName,
+                  sections,
+                  createSectionIfMissing,
+                  dryRun
+                );
+                selectedSection = newSection;
+              }
+            } else {
+              throw new Error(
+                `Section "${sectionName}" not found in suite ${resolvedSuiteId}.\n` +
+                `Available sections: ${availableSections}\n` +
+                `Use --create-section to create missing sections automatically.`
+              );
+            }
           }
           
           if (!selectedSection.parent_id) {
@@ -175,7 +331,22 @@ export class SyncService {
           }
         }
         
-        sectionId = selectedSection.id;
+        // Set sectionId from selectedSection if we found/created one
+        if (selectedSection) {
+          sectionId = selectedSection.id;
+          // Log section creation in dry-run mode (negative IDs indicate mock sections)
+          if (dryRun && sectionId < 0) {
+            logger.info(`[DRY RUN] Section "${selectedSection.name}" would be created in suite ${resolvedSuiteId}`);
+          }
+        }
+        } // End of if (!sectionId) block
+        
+        // Ensure sectionId is set
+        if (!sectionId) {
+          throw new Error('Failed to resolve section ID. This should not happen.');
+        }
+        
+        testrailSuiteId = resolvedSuiteId;
       } else if (testrailSectionId) {
         sectionId = testrailSectionId;
         
@@ -191,7 +362,7 @@ export class SyncService {
           logger.warning(`Could not fetch section details: ${error.message}. Proceeding without suite_id...`);
         }
       } else {
-        throw new Error('Either suite ID or section ID must be provided');
+        throw new Error('Either suite ID, suite name, or section ID must be provided');
       }
 
       // Step 1: Fetch Jira ticket
@@ -214,12 +385,19 @@ export class SyncService {
       logger.success(`Found ${scenarios.length} scenario(s)`);
 
       // Step 3: Get existing test cases
-      logger.info(`Fetching existing test cases from TestRail section ${sectionId}...`);
-      const existingTestCases = await this.testrailClient.getTestCases(
-        testrailProjectId,
-        sectionId,
-        testrailSuiteId || undefined
-      );
+      // Skip fetching if we're in dry-run mode with a mock section (negative IDs indicate mock sections)
+      let existingTestCases: TestRailTestCaseResponse[] = [];
+      if (dryRun && sectionId < 0) {
+        logger.info(`[DRY RUN] Skipping test case fetch (section would be created)`);
+        logger.verboseLog(`[DRY RUN] Would fetch existing test cases from TestRail section ${sectionId}...`);
+      } else {
+        logger.info(`Fetching existing test cases from TestRail section ${sectionId}...`);
+        existingTestCases = await this.testrailClient.getTestCases(
+          testrailProjectId,
+          sectionId,
+          testrailSuiteId || undefined
+        );
+      }
 
       // Filter test cases that belong to this Jira ticket (by refs field)
       const jiraTicketTestCases = existingTestCases.filter((tc) => {
@@ -371,7 +549,6 @@ export class SyncService {
       return result;
     } catch (error: any) {
       const errorMsg = error.message || 'Unknown error occurred';
-      logger.error(`Sync failed: ${errorMsg}`);
       result.errors.push(errorMsg);
       throw error;
     }
@@ -415,6 +592,93 @@ export class SyncService {
     // They go to the Expected Result field, not Steps
 
     return steps;
+  }
+
+  /**
+   * Creates a section hierarchy (handles parent/child relationships)
+   */
+  private async createSectionHierarchy(
+    projectId: number,
+    suiteId: number,
+    sectionPath: string,
+    existingSections: TestRailSection[],
+    createSectionIfMissing: boolean,
+    dryRun: boolean
+  ): Promise<TestRailSection> {
+    const nameParts = sectionPath.split('/').map(part => part.trim()).filter(part => part.length > 0);
+    
+    if (nameParts.length === 1) {
+      // Simple section name - create top-level section
+      if (dryRun) {
+        logger.verboseLog(`[DRY RUN] Section "${sectionPath}" would be created.`);
+        // Return mock section for dry-run to allow preview to continue
+        return {
+          id: -1,
+          name: nameParts[0],
+          suite_id: suiteId,
+        };
+      }
+      return await this.testrailClient.createSection(projectId, suiteId, nameParts[0]);
+    } else {
+      // Hierarchical path - create parent sections first
+      let currentParentId: number | undefined = undefined;
+      const pathTraversed: string[] = [];
+      
+      for (let i = 0; i < nameParts.length; i++) {
+        const partName = nameParts[i];
+        
+        // Check if this section already exists
+        const existingSection = existingSections.find((s: TestRailSection) => 
+          s.name.toLowerCase().trim() === partName.toLowerCase().trim() && 
+          (currentParentId === undefined ? !s.parent_id : s.parent_id === currentParentId)
+        );
+        
+        if (existingSection) {
+          currentParentId = existingSection.id;
+          pathTraversed.push(existingSection.name);
+        } else {
+          // Create the section
+          if (dryRun) {
+            logger.verboseLog(
+              `[DRY RUN] Section "${partName}" would be created ${currentParentId ? `under "${pathTraversed.join('/')}"` : 'at top level'}.`
+            );
+            // Create mock section for dry-run
+            const mockSection: TestRailSection = {
+              id: -1 - i, // Use negative IDs to avoid conflicts, decreasing for each level
+              name: partName,
+              suite_id: suiteId,
+              parent_id: currentParentId,
+            };
+            existingSections.push(mockSection);
+            currentParentId = mockSection.id;
+            pathTraversed.push(mockSection.name);
+          } else {
+            logger.info(`Creating section: "${partName}" ${currentParentId ? `under "${pathTraversed.join('/')}"` : 'at top level'}...`);
+            const newSection = await this.testrailClient.createSection(
+              projectId,
+              suiteId,
+              partName,
+              currentParentId
+            );
+            
+            existingSections.push(newSection);
+            currentParentId = newSection.id;
+            pathTraversed.push(newSection.name);
+          }
+        }
+        
+        // If this is the last part, return it
+        if (i === nameParts.length - 1) {
+          const finalSection = existingSections.find((s: TestRailSection) => s.id === currentParentId);
+          if (finalSection) {
+            return finalSection;
+          }
+          throw new Error(`Failed to create or find section "${sectionPath}"`);
+        }
+      }
+      
+      throw new Error(`Failed to create section hierarchy for "${sectionPath}"`);
+    }
   }
 }
 
