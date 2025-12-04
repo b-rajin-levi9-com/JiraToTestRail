@@ -66,6 +66,8 @@ export class SyncService {
         } else if (createSuiteIfMissing) {
           if (dryRun) {
             logger.verboseLog(`[DRY RUN] Would create suite: "${suiteName}"`);
+            // Assign mock suite ID for dry-run to allow preview to continue
+            resolvedSuiteId = -1;
           } else {
             logger.info(`Creating suite: "${suiteName}"...`);
             const newSuite = await this.testrailClient.createSuite(testrailProjectId, suiteName);
@@ -99,8 +101,14 @@ export class SyncService {
       // Resolve section ID from suite ID if needed
       let sectionId: number | undefined;
       if (resolvedSuiteId) {
-        logger.info(`Fetching sections from suite ${resolvedSuiteId}...`);
-        const sections = await this.testrailClient.getSections(testrailProjectId, resolvedSuiteId);
+        // Skip API call in dry-run mode if we have a mock suite ID
+        let sections: TestRailSection[] = [];
+        if (dryRun && resolvedSuiteId === -1) {
+          logger.verboseLog(`[DRY RUN] Skipping section fetch for mock suite ID ${resolvedSuiteId}`);
+        } else {
+          logger.info(`Fetching sections from suite ${resolvedSuiteId}...`);
+          sections = await this.testrailClient.getSections(testrailProjectId, resolvedSuiteId);
+        }
         
         // Ensure sections is an array
         if (!Array.isArray(sections)) {
@@ -601,7 +609,13 @@ export class SyncService {
     if (nameParts.length === 1) {
       // Simple section name - create top-level section
       if (dryRun) {
-        throw new Error(`[DRY RUN] Section "${sectionPath}" would be created. Run without --dry-run to create it.`);
+        logger.verboseLog(`[DRY RUN] Section "${sectionPath}" would be created.`);
+        // Return mock section for dry-run to allow preview to continue
+        return {
+          id: -1,
+          name: nameParts[0],
+          suite_id: suiteId,
+        };
       }
       return await this.testrailClient.createSection(projectId, suiteId, nameParts[0]);
     } else {
@@ -624,23 +638,32 @@ export class SyncService {
         } else {
           // Create the section
           if (dryRun) {
-            throw new Error(
-              `[DRY RUN] Section "${partName}" would be created ${currentParentId ? `under "${pathTraversed.join('/')}"` : 'at top level'}. ` +
-              `Run without --dry-run to create it.`
+            logger.verboseLog(
+              `[DRY RUN] Section "${partName}" would be created ${currentParentId ? `under "${pathTraversed.join('/')}"` : 'at top level'}.`
             );
+            // Create mock section for dry-run
+            const mockSection: TestRailSection = {
+              id: -1 - i, // Use negative IDs to avoid conflicts, decreasing for each level
+              name: partName,
+              suite_id: suiteId,
+              parent_id: currentParentId,
+            };
+            existingSections.push(mockSection);
+            currentParentId = mockSection.id;
+            pathTraversed.push(mockSection.name);
+          } else {
+            logger.info(`Creating section: "${partName}" ${currentParentId ? `under "${pathTraversed.join('/')}"` : 'at top level'}...`);
+            const newSection = await this.testrailClient.createSection(
+              projectId,
+              suiteId,
+              partName,
+              currentParentId
+            );
+            
+            existingSections.push(newSection);
+            currentParentId = newSection.id;
+            pathTraversed.push(newSection.name);
           }
-          
-          logger.info(`Creating section: "${partName}" ${currentParentId ? `under "${pathTraversed.join('/')}"` : 'at top level'}...`);
-          const newSection = await this.testrailClient.createSection(
-            projectId,
-            suiteId,
-            partName,
-            currentParentId
-          );
-          
-          existingSections.push(newSection);
-          currentParentId = newSection.id;
-          pathTraversed.push(newSection.name);
         }
         
         // If this is the last part, return it
