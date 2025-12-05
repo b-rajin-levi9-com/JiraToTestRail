@@ -546,6 +546,21 @@ export class SyncService {
         logger.warning(`Errors: ${result.errors.length}`);
       }
 
+      // Add label to Jira ticket if sync was successful and not a dry run
+      // Only if label feature is enabled (defaults to false)
+      if (!dryRun && result.errors.length === 0 && result.scenariosFound > 0 && config.jira.addSyncLabel === true) {
+        try {
+          await this.jiraClient.addLabel(jiraKey, 'testrail-synced');
+          logger.info(`✓ Added label "testrail-synced" to Jira ticket ${jiraKey}`);
+        } catch (error: any) {
+          // Don't fail the sync if label addition fails, just log a warning
+          logger.warning(`⚠️  Could not add label to Jira ticket: ${error.message}`);
+          result.errors.push(`Label update failed: ${error.message}`);
+        }
+      } else if (!dryRun && result.errors.length === 0 && result.scenariosFound > 0 && config.jira.addSyncLabel !== true) {
+        logger.verboseLog(`Label feature is disabled (JIRA_ADD_SYNC_LABEL not set to true). Skipping label addition.`);
+      }
+
       return result;
     } catch (error: any) {
       const errorMsg = error.message || 'Unknown error occurred';

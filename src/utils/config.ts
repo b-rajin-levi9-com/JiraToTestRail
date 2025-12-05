@@ -7,6 +7,7 @@ export interface Config {
     url: string;
     email: string;
     apiToken: string;
+    addSyncLabel?: boolean;
   };
   testrail: {
     url: string;
@@ -26,6 +27,14 @@ function validateConfig(): Config {
   const testrailProjectId = process.env.TESTRAIL_PROJECT_ID
     ? parseInt(process.env.TESTRAIL_PROJECT_ID, 10)
     : undefined;
+
+  // Parse JIRA_ADD_SYNC_LABEL (defaults to false)
+  const jiraAddSyncLabelEnv = process.env.JIRA_ADD_SYNC_LABEL;
+  let jiraAddSyncLabel: boolean | undefined = false; // Default to false
+  if (jiraAddSyncLabelEnv !== undefined) {
+    const normalized = jiraAddSyncLabelEnv.toLowerCase().trim();
+    jiraAddSyncLabel = normalized === 'true' || normalized === '1';
+  }
 
   const missing: string[] = [];
 
@@ -48,6 +57,7 @@ function validateConfig(): Config {
       url: jiraUrl!,
       email: jiraEmail!,
       apiToken: jiraApiToken!,
+      addSyncLabel: jiraAddSyncLabel,
     },
     testrail: {
       url: testrailUrl!,

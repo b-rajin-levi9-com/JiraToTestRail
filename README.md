@@ -37,6 +37,9 @@ A Node.js CLI tool that automatically extracts Gherkin-style scenarios from Jira
    ```bash
    npm install
    ```
+   
+   **Note:** This project includes a `.npmrc` file with `ignore-scripts=true` as a security measure to prevent automatic execution of npm lifecycle scripts during installation. This helps protect against potential malicious scripts in dependencies. All dependencies in this project work correctly without requiring post-install scripts.
+   
 3. Build the project:
    ```bash
    npm run build
@@ -63,6 +66,10 @@ A Node.js CLI tool that automatically extracts Gherkin-style scenarios from Jira
 
    # TestRail Project Configuration (can be overridden via CLI)
    TESTRAIL_PROJECT_ID=1
+
+   # Optional: Enable/disable automatic Jira label addition (default: false)
+   # Set to true if you want to automatically add "testrail-synced" label to synced tickets
+   JIRA_ADD_SYNC_LABEL=false
    ```
 
 ### Getting Your TestRail API Key

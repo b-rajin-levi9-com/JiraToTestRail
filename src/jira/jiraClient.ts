@@ -159,6 +159,109 @@ export class JiraClient {
   }
 
   /**
+   * Gets current labels from a Jira ticket
+   */
+  async getTicketLabels(issueKey: string): Promise<string[]> {
+    try {
+      logger.verboseLog(`Fetching labels for Jira ticket: ${issueKey}`);
+      
+      const response = await this.client.get(`/rest/api/3/issue/${issueKey}?fields=labels`);
+      const labels = response.data.fields?.labels || [];
+      
+      logger.verboseLog(`Found ${labels.length} label(s) on ticket ${issueKey}`);
+      return labels;
+    } catch (error: any) {
+      if (error.response) {
+        const status = error.response.status;
+        const errorData = error.response.data || {};
+        const errorMsg = errorData.errorMessages?.[0] || 
+                        errorData.message || 
+                        error.response.statusText || 
+                        '';
+        
+        logger.verboseLog(`Jira API Error Response: Status ${status}, Data: ${JSON.stringify(errorData)}`);
+        
+        if (status === 401 || status === 403) {
+          throw new Error(
+            `Authentication failed. Please check your Jira credentials (JIRA_EMAIL, JIRA_API_TOKEN).`
+          );
+        }
+        if (status === 404) {
+          throw new Error(`Jira ticket "${issueKey}" not found.`);
+        }
+        throw new Error(
+          `Failed to fetch labels: ${status} ${error.response.statusText}. ${errorMsg}`
+        );
+      }
+      if (error.request) {
+        throw new Error(
+          `Network error: Could not reach Jira at ${config.jira.url}. Please check your connection and JIRA_URL.`
+        );
+      }
+      throw new Error(`Error fetching labels: ${error.message}`);
+    }
+  }
+
+  /**
+   * Adds a label to a Jira ticket
+   * If the label already exists, it won't be duplicated
+   */
+  async addLabel(issueKey: string, label: string): Promise<void> {
+    try {
+      logger.verboseLog(`Adding label "${label}" to Jira ticket: ${issueKey}`);
+      
+      // First, fetch current labels
+      const currentLabels = await this.getTicketLabels(issueKey);
+      
+      // Check if label already exists
+      if (currentLabels.includes(label)) {
+        logger.verboseLog(`Label "${label}" already exists on ticket ${issueKey}`);
+        return;
+      }
+      
+      // Add the new label
+      const updatedLabels = [...currentLabels, label];
+      
+      await this.client.put(`/rest/api/3/issue/${issueKey}`, {
+        fields: {
+          labels: updatedLabels
+        }
+      });
+      
+      logger.verboseLog(`Successfully added label "${label}" to ticket ${issueKey}`);
+    } catch (error: any) {
+      if (error.response) {
+        const status = error.response.status;
+        const errorData = error.response.data || {};
+        const errorMsg = errorData.errorMessages?.[0] || 
+                        errorData.message || 
+                        error.response.statusText || 
+                        '';
+        
+        logger.verboseLog(`Jira API Error Response: Status ${status}, Data: ${JSON.stringify(errorData)}`);
+        
+        if (status === 401 || status === 403) {
+          throw new Error(
+            `Authentication failed. Please check your Jira credentials (JIRA_EMAIL, JIRA_API_TOKEN).`
+          );
+        }
+        if (status === 404) {
+          throw new Error(`Jira ticket "${issueKey}" not found.`);
+        }
+        throw new Error(
+          `Failed to add label to Jira ticket: ${status} ${error.response.statusText}. ${errorMsg}`
+        );
+      }
+      if (error.request) {
+        throw new Error(
+          `Network error: Could not reach Jira at ${config.jira.url}. Please check your connection and JIRA_URL.`
+        );
+      }
+      throw new Error(`Error adding label to Jira ticket: ${error.message}`);
+    }
+  }
+
+  /**
    * Extracts plain text from Atlassian Document Format (ADF)
    */
   private extractTextFromADF(adf: any): string {
