@@ -547,8 +547,8 @@ export class SyncService {
       }
 
       // Add label to Jira ticket if sync was successful and not a dry run
-      // Only if label feature is enabled (defaults to true)
-      if (!dryRun && result.errors.length === 0 && result.scenariosFound > 0 && config.jira.addSyncLabel !== false) {
+      // Only if label feature is enabled (defaults to false)
+      if (!dryRun && result.errors.length === 0 && result.scenariosFound > 0 && config.jira.addSyncLabel === true) {
         try {
           await this.jiraClient.addLabel(jiraKey, 'testrail-synced');
           logger.info(`✓ Added label "testrail-synced" to Jira ticket ${jiraKey}`);
@@ -557,8 +557,8 @@ export class SyncService {
           logger.warning(`⚠️  Could not add label to Jira ticket: ${error.message}`);
           result.errors.push(`Label update failed: ${error.message}`);
         }
-      } else if (!dryRun && result.errors.length === 0 && result.scenariosFound > 0 && config.jira.addSyncLabel === false) {
-        logger.verboseLog(`Label feature is disabled (JIRA_ADD_SYNC_LABEL=false). Skipping label addition.`);
+      } else if (!dryRun && result.errors.length === 0 && result.scenariosFound > 0 && config.jira.addSyncLabel !== true) {
+        logger.verboseLog(`Label feature is disabled (JIRA_ADD_SYNC_LABEL not set to true). Skipping label addition.`);
       }
 
       return result;

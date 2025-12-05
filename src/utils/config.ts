@@ -28,9 +28,9 @@ function validateConfig(): Config {
     ? parseInt(process.env.TESTRAIL_PROJECT_ID, 10)
     : undefined;
 
-  // Parse JIRA_ADD_SYNC_LABEL (defaults to true for backward compatibility)
+  // Parse JIRA_ADD_SYNC_LABEL (defaults to false)
   const jiraAddSyncLabelEnv = process.env.JIRA_ADD_SYNC_LABEL;
-  let jiraAddSyncLabel: boolean | undefined = true; // Default to true
+  let jiraAddSyncLabel: boolean | undefined = false; // Default to false
   if (jiraAddSyncLabelEnv !== undefined) {
     const normalized = jiraAddSyncLabelEnv.toLowerCase().trim();
     jiraAddSyncLabel = normalized === 'true' || normalized === '1';

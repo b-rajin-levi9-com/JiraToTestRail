@@ -67,9 +67,9 @@ A Node.js CLI tool that automatically extracts Gherkin-style scenarios from Jira
    # TestRail Project Configuration (can be overridden via CLI)
    TESTRAIL_PROJECT_ID=1
 
-   # Optional: Enable/disable automatic Jira label addition (default: true)
-   # Set to false if you don't have permission to add labels in Jira
-   JIRA_ADD_SYNC_LABEL=true
+   # Optional: Enable/disable automatic Jira label addition (default: false)
+   # Set to true if you want to automatically add "testrail-synced" label to synced tickets
+   JIRA_ADD_SYNC_LABEL=false
    ```
 
 ### Getting Your TestRail API Key
