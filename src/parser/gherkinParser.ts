@@ -15,11 +15,12 @@ export class GherkinParser {
 
     const scenarios: ParsedScenario[] = [];
     
-    // Pattern to match scenario blocks - allows blank lines between title and steps
-    // Matches: "Scenario X:" or "Scenario:" followed by optional blank lines, then steps
+    // Pattern to match scenario blocks - requires "Scenario" at start of line and prevents plural "scenarios"
+    // Matches: "Scenario X:", "Scenario:", "Scenario X", "Scenario1", "Scenario" followed by optional blank lines, then steps
     // Handles multiline scenarios with Given/When/Then/And steps
     // Supports multi-line titles (title can be on same line or following lines)
-    const scenarioPattern = /Scenario\s*(\d+)?\s*:?\s*((?:[^\n]*(?:\n(?!\s*(?:Given|When|Then|And|But|Scenario))[^\n]*)*))(?:\n\s*)*((?:Given|When|Then|And|But)[^\n]*(?:\n(?!Scenario)[^\n]*)*)/gi;
+    // Word boundary before "Scenario" prevents matching plural "scenarios" in descriptive text
+    const scenarioPattern = /(?:^|\n)\s*\bScenario\s*(\d+)?\s*:?\s*((?:[^\n]*(?:\n(?!\s*(?:Given|When|Then|And|But|Scenario\b))[^\n]*)*))(?:\n\s*)*((?:Given|When|Then|And|But)[^\n]*(?:\n(?!Scenario\b)[^\n]*)*)/gim;
     
     let match;
     while ((match = scenarioPattern.exec(description)) !== null) {
